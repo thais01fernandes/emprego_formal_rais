@@ -1,0 +1,382 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+# Mapa e gráfico - Evolução da localização emprego formal em São Paulo
+
+```{r}
+
+shp_distritos <- st_read("C:/Users/Thais Pereira/Documents/SIRGAS_SHP_subprefeitura/SIRGAS_SHP_subprefeitura.shp") %>%  as.data.frame() %>% 
+  dplyr::mutate(sp_nome = stringr::str_to_title(sp_nome)) %>% 
+  select(sp_nome, geometry) %>% 
+  rename(Subprefeitura = sp_nome)
+
+rais_2003_2024 <- readr::read_csv("C:/Users/Thais Pereira/Documents/base_rais_2004_2024.csv")
+
+```
+
+```{r}
+
+library("showtext")
+library("extrafont")
+library("sf")
+library("cowplot")
+library("ggrepel")
+library("tidyverse")
+library("readxl")
+library("dplyr")
+library("writexl")
+library("scales")
+
+systemfonts::system_fonts()
+
+font_add(
+  family  = "Bricolage Grotesque",
+  regular = "C:/Users/Thais Pereira/Documents/economia_verde/Bricolage_Grotesque/static/BricolageGrotesque-Regular.ttf",
+  bold    = "C:/Users/Thais Pereira/Documents/economia_verde/Bricolage_Grotesque/static/BricolageGrotesque_24pt-Bold.ttf"
+)
+
+showtext_auto()
+
+
+```
+
+
+
+```{r}
+
+dados_mapas <- 
+  rais_2003_2024 %>%
+  filter(!is.na(Subprefeitura)) %>% 
+  group_by(Subprefeitura, ano) %>% 
+  summarise(vinculos_ativos = sum(quantidade_vinculos_ativos), .groups = "drop") %>% 
+  group_by(ano) %>% 
+  mutate(pct = vinculos_ativos / sum(vinculos_ativos) * 100) %>% 
+  ungroup() %>% 
+  pivot_wider(
+    names_from = ano,
+    values_from = c(vinculos_ativos, pct),
+    names_glue = "{.value}_{ano}"
+  )
+
+```
+
+
+
+```{r}
+
+
+# Mapa 2004
+
+dados_sf <- dados_mapas %>% 
+  left_join(shp_distritos, by = "Subprefeitura") %>% 
+  select(Subprefeitura, vinculos_ativos_2004, pct_2004, geometry) %>% 
+  st_as_sf()
+
+# Dados para as anotações
+dados_annotations <- dados_sf %>%
+  filter(Subprefeitura %in% c('Vila Mariana', 'Cidade Tiradentes')) %>%
+  mutate(
+    centroide = st_centroid(geometry),
+    x = st_coordinates(centroide)[,1],
+    y = st_coordinates(centroide)[,2],
+    label = case_when(
+      Subprefeitura == 'Vila Mariana' ~ "Sé e Vila Mariana\nconcentravam\nquase 40%\ndos empregos\nformais",
+      Subprefeitura == 'Cidade Tiradentes' ~ "A Cidade Tiradentes\ntinha apenas\n0.05% dos\nempregos formais"
+    )
+  )
+
+
+# Mapa
+
+mapa_base <- ggplot() +
+  geom_sf(data = dados_sf, 
+          fill = NA, 
+          color = "darkgray", 
+          size = 0.3) +
+
+  geom_sf(data = dados_sf %>% 
+            st_sample(size = round(dados_sf$vinculos_ativos_2004 / 1000), 
+                     type = "random") %>% 
+            st_sf(),
+          shape = 16,
+          color = "#4ECDC4",
+          alpha = 0.7,
+          size = 0.2) +
+  
+  geom_label_repel(
+    data = dados_annotations,
+    aes(x = x, y = y, label = label),
+    color = "white",
+    fill = alpha("#404044", 0.5),
+    size = 13,
+    segment.color = "darkgray",
+    segment.size = 0.5,
+    box.padding = 0.7,
+    point.padding = 1,
+    force = 10,
+    max.overlaps = Inf,
+    nudge_x = c(30000, -38000), 
+    nudge_y = c(4000, -4000), 
+    family = "Bricolage Grotesque", 
+    lineheight = 0.25
+  ) +
+  labs(title = "Onde estavam os empregos formais em 2004?", 
+       subtitle = "Vila Mariana, Seguido da Sé eram as regiões com mais empregos formais na época") + 
+  scale_alpha_continuous(range = c(0.1, 0.8)) + 
+  coord_sf(expand = FALSE, datum = NA) +
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "#404044", color = "#404044"),
+    plot.background = element_rect(fill = "#404044", color = "#404044"), 
+    plot.title = element_text(
+      size = 65, 
+      colour = "#effae6", 
+      family = "Bricolage Grotesque", 
+      lineheight = 1,  
+      hjust = 0,  # 1 = direita, 0 = esquerda, 0.5 = centro
+      vjust = 0.3,  
+      margin = margin(b = 5, r = 10)  # Margem inferior e direita
+    ),
+    plot.subtitle = element_text(
+      size = 40, 
+      colour = "#effae6", 
+      family = "Bricolage Grotesque", 
+      lineheight = 1,  
+      hjust = 0,  
+      vjust = 0.3,  
+    ),
+    plot.margin = margin(2, 1, 0.5, 1, "cm"), 
+    panel.spacing = unit(1, "cm")
+  )
+
+mapa_final_2004 <- ggdraw(mapa_base) +
+  theme(plot.background = element_rect(fill = "#404044", color = "#404044"))
+
+
+# ------ Gráfico de barras
+
+grafico_barras_2004 <- dados_mapas %>% 
+  select(Subprefeitura, pct_2004) %>% 
+  filter(!is.na(Subprefeitura)) %>% 
+  mutate(pct_2004 = pct_2004/100) %>% 
+  arrange(pct_2004) %>% 
+  slice_max(pct_2004, n = 5) %>% 
+  ggplot() +
+  geom_col(aes(reorder(Subprefeitura, pct_2004), y = pct_2004), fill = "#4ECDC4") + 
+  geom_text(aes(x = Subprefeitura, y = pct_2004, 
+                label = percent(pct_2004, accuracy = 1)), 
+            hjust = -0.2, size = 10, color = "#effae6", family = "Bricolage Grotesque") +
+  theme_void() + 
+  theme(
+    plot.background = element_rect(fill = "#404044", colour = "#404044"),
+    panel.background = element_rect(fill = "#404044", colour = NA),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 30, hjust = 0.9, colour = "#effae6", family = "Bricolage Grotesque"),
+    plot.margin = margin(1, 0.9, 1, 0.2, "cm"),
+    panel.spacing = unit(2, "cm"),
+    legend.position = "none"
+  )  +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, max(dados_mapas$pct_2004/100) * 1.2)) +
+  coord_flip()
+
+
+# Juntando grafico + mapa
+
+combinado <- mapa_final_2004 + 
+ inset_element(grafico_barras_2004, 
+                left = 0.49,   # aumentar puxa mais para esquerda
+                bottom = 0,   
+                right = 0.79, # dominuit puxa mais para esquerda 
+                top = 0.4)
+
+combinado <- combinado & 
+  theme(
+    plot.background = element_rect(fill = "#404044", color = "#404044"),
+    panel.background = element_rect(fill = "#404044", color = "#404044")
+  )
+
+
+# Salvar
+ggsave("mapa_com_grafico_2004.png", 
+       plot = combinado,
+       width = 8, 
+       height = 6,
+       dpi = 400,
+       bg = "#404044")
+
+
+
+```
+
+
+
+
+```{r}
+
+# Mapa 2024
+
+dados_sf <- dados_mapas %>% 
+  left_join(shp_distritos, by = "Subprefeitura") %>% 
+  select(Subprefeitura, vinculos_ativos_2024, pct_2024, geometry) %>% 
+  st_as_sf()
+
+# preparar os dados para as anotações
+dados_annotations <- dados_sf %>%
+  filter(Subprefeitura %in% c('Pinheiros', 'Cidade Tiradentes')) %>%
+  mutate(
+    centroide = st_centroid(geometry),
+    x = st_coordinates(centroide)[,1],
+    y = st_coordinates(centroide)[,2],
+    label = case_when(
+      Subprefeitura == 'Pinheiros' ~ "Pinheiros, Sé e Lapa\nconcentram\nquase 40%\ndos empregos\nformais",
+      Subprefeitura == 'Cidade Tiradentes' ~ "A Cidade Tiradentes\ntem apenas\n0.2% dos\nempregos formais"
+    )
+  )
+
+# Mapa 2024
+
+mapa_base <- ggplot() +
+  geom_sf(data = dados_sf, 
+          fill = NA, 
+          color = "darkgray", 
+          size = 0.3) +
+  
+  geom_sf(data = dados_sf %>% 
+            st_sample(size = round(dados_sf$vinculos_ativos_2024 / 1000), 
+                     type = "random") %>% 
+            st_sf(),
+          shape = 16,
+          color = "#4ECDC4",
+          alpha = 0.7,
+          size = 0.2) +
+
+    geom_label_repel(
+    data = dados_annotations,
+    aes(x = x, y = y, label = label),
+    color = "white",
+    fill = alpha("#404044", 0.5),
+    size = 13,
+    segment.color = "darkgray",
+    segment.size = 0.5,
+    box.padding = 0.7,
+    point.padding = 1,
+    force = 10,
+    max.overlaps = Inf,
+    nudge_x = c(30000, -38000), 
+    nudge_y = c(4000, -4000), 
+    family = "Bricolage Grotesque",
+    lineheight = 0.25
+  ) +
+  labs(title = "Onde estão os empregos formais em 2024?", 
+       subtitle = "Pinheiros, Seguido da Sé são as regiões com mais empregos formais") + 
+  
+  scale_alpha_continuous(range = c(0.1, 0.8)) + 
+  coord_sf(expand = FALSE, datum = NA) +
+  theme_void() +
+  theme(
+    panel.background = element_rect(fill = "#404044", color = "#404044"),
+    plot.background = element_rect(fill = "#404044", color = "#404044"), 
+    plot.title = element_text(
+      size = 65, 
+      colour = "#effae6", 
+      family = "Bricolage Grotesque", 
+      lineheight = 1,  
+      hjust = 0,  # 1 = direita, 0 = esquerda, 0.5 = centro
+      vjust = 0.3,
+      margin = margin(b = 5, r = 10)  # Margem inferior e direita
+    ),
+    plot.subtitle = element_text(
+      size = 40, 
+      colour = "#effae6", 
+      family = "Bricolage Grotesque", 
+      lineheight = 1,  
+      hjust = 0,  
+      vjust = 0.3, 
+    ),
+    plot.margin = margin(2, 1, 0.5, 1, "cm"), 
+    panel.spacing = unit(1, "cm")
+  )
+
+
+mapa_final_2024 <- ggdraw(mapa_base) +
+  theme(plot.background = element_rect(fill = "#404044", color = "#404044"))
+
+
+# ------ Gráfico de barras
+
+grafico_barras_2024 <- dados_mapas %>% 
+select(Subprefeitura, pct_2024) %>% 
+  filter(!is.na(Subprefeitura)) %>% 
+  mutate(pct_2024 = pct_2024/100) %>% 
+  arrange(pct_2024) %>% 
+  slice_max(pct_2024, n = 5) %>% 
+  ggplot() +
+  geom_col(aes(reorder(Subprefeitura, pct_2024), y = pct_2024), fill = "#4ECDC4") + 
+  geom_text(aes(x = Subprefeitura, y = pct_2024, 
+                label = percent(pct_2024, accuracy = 1)),  # Formata como porcentagem
+            hjust = -0.2, size = 10, color = "#effae6", family = "Bricolage Grotesque") +
+  theme_void() + 
+  theme(
+    plot.background = element_rect(fill = "#404044", colour = "#404044"),
+    panel.background = element_rect(fill = "#404044", colour = NA),
+    axis.text = element_text(size = 15, colour = "#effae6", family = "Bricolage Grotesque"),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 30, hjust = 0.9, colour = "#effae6", family = "Bricolage Grotesque"),
+    plot.margin = margin(1, 0.9, 1, 0.2, "cm"),
+    panel.spacing = unit(2, "cm"),
+    legend.position = "none"
+  )  +
+  coord_flip() +
+    # ACRESCENTE ESTA LINHA: expandir o limite superior do eixo Y
+  scale_y_continuous(limits = c(0, max(dados_mapas$pct_2024/100) * 1.2)) +
+  coord_flip()
+
+
+# Juntando grafico + mapa
+
+combinado <- mapa_final_2024 + 
+ inset_element(grafico_barras_2024, 
+                left = 0.49,   
+                bottom = 0,   
+                right = 0.79,  
+                top = 0.4)
+
+combinado <- combinado & 
+  theme(
+    plot.background = element_rect(fill = "#404044", color = "#404044"),
+    panel.background = element_rect(fill = "#404044", color = "#404044")
+  )
+
+
+# Salvar
+ggsave("mapa_com_grafico_2024.png", 
+       plot = combinado,
+       width = 8, 
+       height = 6,
+       dpi = 400,
+       bg = "#404044")
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
